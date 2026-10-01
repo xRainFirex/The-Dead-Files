@@ -3,7 +3,7 @@
 > A gritty 1990s UK investigative simulation and tactical point-and-click adventure.
 > Engine: **Godot 4.x** (pin the latest stable 4.x at project start; nothing here needs anything newer than 4.4).
 > Language: **typed GDScript** (rationale in §0.6).
-> Target: PC (Steam, GOG), 640×360 internal canvas, integer-scaled.
+> Target: PC (Steam, GOG), 960×540 pixel-art canvas, integer-scaled (sharp fractional fallback).
 
 ---
 
@@ -22,53 +22,63 @@
 ## 0. Critical Feasibility Audit (Godot 4.x)
 
 **Headline verdict:** the *engine* side of this design is very achievable. Static first-person
-scenes at 640×360 cost almost nothing to render, and Godot's `Resource` system fits a
+scenes at 960×540 cost almost nothing to render, and Godot's `Resource` system fits a
 simulation built on data. The real dangers are **scope** (eight distinct interfaces, each a
-mini-game), **legibility** (a game about reading documents at 640×360), and the **Truth
+mini-game), **legibility** (a game about reading documents in pixel art), and the **Truth
 Engine** (procedural mysteries that are solvable *and* interesting). The plan below is
 ordered to deal with those three first.
 
 ### 0.1 Resolution & Viewport Pipeline
 
-**What works out of the box**
+**Decision: pixel art drawn on a 960×540 canvas** (raised from the brief's 640×360 to fix
+legibility; see Critique 1).
 
 | Setting | Value | Why |
 |---|---|---|
-| `display/window/size/viewport_width/height` | `640 × 360` | Base canvas. 16:9 and an exact divisor of 1280×720, 1920×1080 (×3), 2560×1440 (×4) and 3840×2160 (×6). |
-| `display/window/stretch/mode` | `viewport` | Renders the whole game at 640×360, then scales up. No sub-pixel bleed by construction. |
-| `display/window/stretch/aspect` | `keep` | Letterbox/pillarbox for 16:10 and ultrawide. |
-| `display/window/stretch/scale_mode` | `integer` | Crisp integer scaling (available since 4.2). |
+| World canvas | `960 × 540` | 16:9. Exact ×2 to 1920×1080 and ×4 to 3840×2160, the two most common PC targets. |
+| `display/window/stretch/mode` | `disabled` | The `PixelViewport` script below does the scaling itself, so the text layer can stay at native resolution. |
+| Scaling | Integer where possible; **sharp fractional** otherwise | See "Non-integer displays" below. |
 | `rendering/textures/canvas_textures/default_texture_filter` | `Nearest` | No bilinear smearing. |
 | `rendering/2d/snap/snap_2d_transforms_to_pixel` | `true` | Stops sprites shimmering between pixels during tweens. |
 | `rendering/2d/snap/snap_2d_vertices_to_pixel` | `true` | Same, for polygons and lines. |
 | Renderer | **Compatibility** (OpenGL 3.3 / GLES3) | Pure 2D, so Forward+ gains nothing. Compatibility runs on more hardware (old laptops, Steam Deck) and starts faster. |
 
-**Critique 1: legibility is the biggest technical-design risk.**
+**Critique 1: legibility, and why the canvas is 960×540.**
 Most of this game is *reading*: chits, autopsy reports, microfiche newspapers, ledgers,
-timecards, typed letters. At 640×360, a full A4 page cannot be shown readably. A 5×7 pixel
-font gives about 100 characters per line at most, and microfiche newsprint is worse.
-Options:
+timecards, typed letters. At the brief's original 640×360, a full A4 page cannot be shown
+readably: a 5×7 pixel font gives about 100 characters per line, and a page would need
+panning. Raising the canvas to 960×540 (2.25× the pixels) changes that:
 
-1. *Pure low-res:* documents become "zoomed fragments" you pan across. Authentic, but slow and
-   hard on the eyes. **Not recommended** as the only mode.
-2. **Hybrid pipeline (recommended):** draw the *world* (desk, rooms, car interior, corkboard
-   frame) in a 640×360 `SubViewport`, integer-scaled. Draw **document inspection, the
-   transcript and the UI text layer** in a native-resolution `CanvasLayer` above it, with a
-   pixel-styled but higher-density font (e.g. a 2× bitmap font drawn at the output scale). The
-   document "paper" art stays pixel art, but text is drawn sharp at native scale. *Papers,
-   Please* and *Return of the Obra Dinn* both made similar compromises.
-3. Add a **legibility setting** ("Authentic / Clear") that switches the document font and turns
-   off grain over text. This is also an accessibility requirement (§4, M4).
+- With a 6×10 bitmap font, a typed document fits about 45 lines of about 80 characters in a
+  page-height view. That is a real typewritten page, readable in-world at ×2 on 1080p.
+- Chits, terminal screens, timecards, signs and labels are all readable **inside the pixel
+  art itself**. No separate rendering path is needed for them.
+- The style stays pixel art. It is closer to late-90s VGA/SVGA adventure detail than to
+  chunky 8-bit, which suits the setting.
 
-Because of option 2, the root window uses `stretch/mode = disabled`, and a small
-`PixelViewport` script does the integer scaling itself:
+A **native-resolution text layer** (`HiResLayer`) is still kept, but only for three jobs:
+1. **Microfiche small print** (newspaper columns, registry pages), which is dense even at 960×540.
+2. **Long tape transcripts** and the evidence-card detail view.
+3. The **"Clear" legibility setting** (accessibility, §4 M4): switches every document to a
+   sharp native-resolution font and turns off grain over text.
+
+**Non-integer displays.** 960×540 scales cleanly to 1080p (×2) and 4K (×4), but not to
+1440p (×2.67), 1280×800 Steam Deck (×1.33) or 1366×768 laptops (×1.42). Two modes, as a
+player setting:
+- **Integer**: the largest whole-number scale, letterboxed. Perfectly crisp, but at 1440p the
+  image only fills 1920×1080 of the screen.
+- **Sharp fractional (default on non-integer displays)**: scale up to the next whole number
+  with nearest-neighbour, then down to the window size with bilinear filtering. Pixels stay
+  sharp, with at most one pixel of soft edge at boundaries. It fills the screen.
 
 ```gdscript
 # res://core/display/pixel_viewport.gd
 class_name PixelViewport extends Control
-## Hosts the 640x360 world SubViewport and integer-scales it into the window.
+## Hosts the 960x540 world SubViewport and scales it into the window.
 
-const BASE := Vector2i(640, 360)
+const BASE := Vector2i(960, 540)
+enum ScaleMode { INTEGER, SHARP_FRACTIONAL }
+@export var scale_mode := ScaleMode.SHARP_FRACTIONAL
 @onready var _container: SubViewportContainer = %WorldContainer
 @onready var _viewport: SubViewport = %WorldViewport
 
@@ -79,16 +89,18 @@ func _ready() -> void:
 	_relayout()
 
 func _relayout() -> void:
-	var win := get_window().size
-	var scale := maxi(1, mini(win.x / BASE.x, win.y / BASE.y))
-	_container.stretch_shrink = 1
+	var win := Vector2(get_window().size)
+	var fit := minf(win.x / BASE.x, win.y / BASE.y)
+	var scale := maxf(1.0, floorf(fit)) if scale_mode == ScaleMode.INTEGER else fit
+	# Sharp-fractional: the post shader samples with a sharp-bilinear kernel when scale is not whole.
+	_container.material.set_shader_parameter(&"sharp_bilinear", not is_equal_approx(scale, roundf(scale)))
 	_container.scale = Vector2(scale, scale)
-	_container.position = (Vector2(win) - Vector2(BASE * scale)) / 2.0
+	_container.position = ((win - Vector2(BASE) * scale) / 2.0).round()
 	Events.display_scale_changed.emit(scale)  # UI layer uses this to map world -> screen coords
 ```
 
 Mouse input reaches the SubViewport through `SubViewportContainer`. Hotspot coordinates
-are always authored in 640×360 space.
+are always authored in 960×540 space.
 
 **Critique 2: shader stacking.** Film grain, CRT/phosphor glow, rain distortion and the
 darkroom safelight tint each read the screen texture. Several `BackBufferCopy` passes or
@@ -99,26 +111,35 @@ viewport texture, so you don't need `hint_screen_texture`). Effects are switched
 ```glsl
 // res://core/display/post_uber.gdshader  (canvas_item)
 shader_type canvas_item;
+uniform bool  sharp_bilinear = false;                       // non-integer scale fallback
 uniform float grain_amount : hint_range(0.0, 0.2) = 0.04;
 uniform float rain_amount  : hint_range(0.0, 1.0) = 0.0;   // windscreen distortion
 uniform sampler2D rain_normal : filter_nearest, repeat_enable;
 uniform float phosphor_amount : hint_range(0.0, 1.0) = 0.0; // microfiche / terminal glow
 uniform vec4 safelight_tint = vec4(1.0);                    // darkroom
 uniform float time_quantum = 12.0;                          // grain fps, keeps it "filmic"
-// ... single pass: offset UV by rain normal, sample, add bloom-lite, multiply tint, add grain.
+// ... single pass: sharp-bilinear UV, offset by rain normal, sample, bloom-lite, tint, grain.
 ```
 
-Decide early whether effects run **at 640×360** (chunky grain, honest to the pixel art) or
+Decide early whether effects run **at 960×540** (grain sized to the art's pixels) or
 **at output resolution** (smooth CRT scanlines). Recommendation: grain and rain at
-640×360 (inside the SubViewport, as a final `CanvasLayer` `ColorRect`). The CRT/phosphor
+960×540 (inside the SubViewport, as a final `CanvasLayer` `ColorRect`). The CRT/phosphor
 effect, used only for the microfiche reader and terminal, runs at output resolution on the
 container, so scanlines can be finer than a game pixel.
 
 **Performance:** a static scene with about 20 layered sprites, one or two particle systems
 (rain), and a single post pass is far below any budget, even on integrated GPUs. The only
-real risk is **memory from large hand-painted backgrounds**. A 640×360 RGBA layer is about
-0.9 MB, so 30 layers per room × 40 room templates is still fine. Use lossless import with
-`VRAM Compressed` **off** (compression artifacts ruin pixel art).
+real risk is **memory from large backgrounds**. A full-screen 960×540 RGBA layer is about
+2 MB, and most layers are much smaller cut-outs. Keep only the current room and its
+neighbours resident (the threaded preload in §2.3 does this), which is roughly
+100–250 MB of textures at worst. Use lossless import with `VRAM Compressed` **off**
+(compression artifacts ruin pixel art).
+
+**Art cost of the larger canvas.** 960×540 is 2.25× the pixels of 640×360 per scene. That is
+real extra drawing time. Contain it with the style guide: a fixed limited palette, shared
+tileable textures (wallpaper, brick, lino, carpet), a reusable prop library (kettles, bureaus,
+ashtrays, phones), and detail concentrated where the player looks (sockets and hotspots)
+with simpler dithered backgrounds elsewhere.
 
 **Pitfalls to codify in the style guide:**
 - Never put a `Camera2D` with smoothing in the world viewport. Scenes are static; parallax
@@ -148,7 +169,7 @@ real risk is **memory from large hand-painted backgrounds**. A 640×360 RGBA lay
 
 ```
 Root (Main.tscn, never freed)
-├── PixelViewport               ← 640x360 world SubViewport (§0.1)
+├── PixelViewport               ← 960x540 world SubViewport (§0.1)
 │   └── WorldViewport
 │       └── ActiveInterface     ← exactly ONE interface scene instanced here (swapped)
 ├── HiResLayer (CanvasLayer)    ← document reader, transcripts, tooltips, dialogue
@@ -1115,13 +1136,16 @@ Each milestone ends in something *playable* and a list of explicit exit criteria
 
 - [ ] Godot 4.x project, Compatibility renderer, settings from §0.1, `.gitattributes` (LFS for `*.png *.wav *.ogg`), `.gitignore` (`.godot/`, `*.import` per policy).
 - [ ] Directory layout §1.3, autoload stubs (`Events`, `Campaign`, `GameClock`, `PhaseDirector`, `InterfaceRouter`, `Content`, `Audio`).
-- [ ] `PixelViewport` + `HiResLayer` proof: a pixel-art desk background with a sharp
-      document overlay, tested at 720p/1080p/1440p/4K and 16:10/21:9.
+- [ ] `PixelViewport` + `HiResLayer` proof: a 960×540 pixel-art desk with an in-world typed
+      document (6×10 bitmap font) and a microfiche overlay, tested in Integer and Sharp
+      fractional modes at 720p, 1080p, 1440p, 4K, Steam Deck 1280×800, 16:10 and 21:9.
+- [ ] Pick and test the document bitmap font: a typed page must read comfortably at ×2 on a
+      24" 1080p monitor and at ×1.33 on Steam Deck.
 - [ ] Post-process uber shader with grain + rain toggles.
 - [ ] Test framework (gdUnit4 or GUT) + headless CI job (GitHub Actions with a Godot headless image) that runs tests and exports a Windows/Linux build.
 - [ ] Style guide: pixel snapping rules, font sizes, hotspot conventions, naming of ids (`c03.dom.kitchen.bin`).
 
-**Exit criteria:** blank project builds in CI. The pixel and hi-res layers look correct on 4 resolutions.
+**Exit criteria:** blank project builds in CI. Documents read comfortably on every tested display, and scaling looks sharp in both modes.
 
 ### M1: Data / Resource Foundation (≈ 3–4 weeks)
 
@@ -1196,8 +1220,9 @@ before M4.**
 
 For a solo developer or a team of 2–3, total **~10–13 months** to beta is realistic *with the
 pruning in §0.5*. Without pruning, double it. The single biggest schedule risk is art: about
-25 room templates plus the desk, flat, car, darkroom and microfiche. Lock the art style (palette,
-dithering rules, resolution of detail) in M0 with one finished room before building the rest.
+25 room templates plus the desk, flat, car, darkroom and microfiche, at 960×540 each. Lock the
+art style (palette, dithering rules, prop library, where detail goes) in M0 with one finished
+room before building the rest, and time how long that room took: it is your per-room budget.
 
 ---
 
@@ -1206,11 +1231,11 @@ dithering rules, resolution of detail) in M0 with one finished room before build
 | # | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|---|
 | R1 | Generated cases feel samey / illogical | High | High | Hand-author first; procedural *assembly* of authored fragments; large clue-template pool; playtest generated cases specifically. |
-| R2 | Document legibility at 640×360 | High | High | Hybrid hi-res text layer (§0.1); Clear-font option. |
+| R2 | Document legibility | Medium | High | 960×540 canvas with a tested document font; hi-res layer for microfiche; Clear-font option (§0.1). |
 | R3 | Admin systems feel like chores | Medium | High | §0.5 pruning; every chit doubles as cover; hard cap on per-day admin time. |
 | R4 | Player acts on a wrong board because of a generator bug | Medium | Very high | Validator + fuzz CI; decoy ceiling; "report this case" debug export with seed + full state. |
 | R5 | Save corruption / breaking saves between patches | Medium | High | JSON + schema migrations + fixture tests; store generated output, not just the seed; backups. |
-| R6 | Art throughput | High | High | Modular room templates; reuse via palette/prop swaps; lock style in M0. |
+| R6 | Art throughput (higher at 960×540) | High | High | Modular room templates; shared textures and prop library; palette swaps; lock style and measure per-room time in M0. |
 | R7 | Real-time boss-key mechanic frustrates players | Medium | Medium | Generous telegraphing; difficulty option; visual + subtitle cues. |
 | R8 | Lethal-path content and platform ratings | Low | Medium | Stylized, off-screen deaths; check Steam/GOG content survey early; PEGI/ESRB-style self-rating for store pages. |
 | R9 | Godot minor-version upgrades mid-project | Medium | Low | Pin engine version per milestone; upgrade only at milestone boundaries with full test run. |
